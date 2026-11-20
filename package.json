@@ -1,0 +1,19 @@
+{
+  "name": "avaxgreen",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "contracts"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w frontend",
+    "build": "npm run build -w frontend",
+    "test": "npm run test -w contracts"
+  },
+  "overrides": {
+    "postcss": "8.5.33"
+  },
+  "dependencies": {
+    "postcss": "8.5.33"
+  }
+}
