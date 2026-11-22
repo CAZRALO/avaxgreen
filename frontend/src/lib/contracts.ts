@@ -14,12 +14,24 @@ import {avalancheFuji, hardhat} from 'viem/chains';
 import tokenAbiJson from '../contracts/GreenCarbonToken.json';
 import registryAbiJson from '../contracts/CarbonRegistry.json';
 import contractAddresses from '../contracts/addresses.json';
+import bytecodesJson from '../contracts/bytecodes.json';
 
 export interface Eip1193Provider {
   request: (args: {method: string; params?: unknown[]}) => Promise<unknown>;
   on?: (event: string, listener: (...args: unknown[]) => void) => void;
   removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
 }
+
+export interface RuntimeContractConfig {
+  chainId: number;
+  network: string;
+  token: Address | null;
+  registry: Address | null;
+  oracleSigner: Address | null;
+  deployBlock: number;
+}
+
+const STORAGE_KEY = 'avaxgreen:runtime-contract-config:v1';
 
 const rawAddresses = contractAddresses as {
   chainId?: number;
@@ -30,69 +42,174 @@ const rawAddresses = contractAddresses as {
   deployBlock?: number;
 };
 
-const envChainId = Number(process.env.NEXT_PUBLIC_CHAIN_ID || rawAddresses.chainId || 43113);
-export const CHAIN_ID = Number.isFinite(envChainId) && envChainId > 0 ? envChainId : 43113;
-export const IS_LOCAL_CHAIN = CHAIN_ID === 31337;
+function toValidAddress(value?: string | null): Address | null {
+  const trimmed = (value || '').trim();
+  return isAddress(trimmed) && trimmed !== zeroAddress ? (trimmed as Address) : null;
+}
 
-export const RPC_URL =
-  process.env.NEXT_PUBLIC_RPC_URL?.trim() ||
-  (IS_LOCAL_CHAIN ? 'http://127.0.0.1:8545' : 'https://api.avax-test.network/ext/bc/C/rpc');
+function defaultConfig(): RuntimeContractConfig {
+  const envChainId = Number(process.env.NEXT_PUBLIC_CHAIN_ID || rawAddresses.chainId || 43113);
+  const chainId = Number.isFinite(envChainId) && envChainId > 0 ? envChainId : 43113;
+  return {
+    chainId,
+    network: rawAddresses.network || (chainId === 31337 ? 'localhost' : 'fuji'),
+    token: toValidAddress(rawAddresses.token),
+    registry: toValidAddress(rawAddresses.registry),
+    oracleSigner: toValidAddress(rawAddresses.oracleSigner),
+    deployBlock: Math.max(0, Number(rawAddresses.deployBlock || 0)),
+  };
+}
 
-export const ACTIVE_CHAIN: Chain = IS_LOCAL_CHAIN
-  ? {
-      ...hardhat,
-      rpcUrls: {default: {http: [RPC_URL]}},
+let activeConfig: RuntimeContractConfig | null = null;
+
+export function getRuntimeConfig(): RuntimeContractConfig {
+  if (activeConfig) return activeConfig;
+  const base = defaultConfig();
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<RuntimeContractConfig>;
+        const token = toValidAddress(parsed.token);
+        const registry = toValidAddress(parsed.registry);
+        if (token && registry) {
+          activeConfig = {
+            chainId: Number(parsed.chainId) || base.chainId,
+            network: parsed.network || base.network,
+            token,
+            registry,
+            oracleSigner: toValidAddress(parsed.oracleSigner),
+            deployBlock: Math.max(0, Number(parsed.deployBlock || 0)),
+          };
+          return activeConfig;
+        }
+      }
+    } catch {
+      // Ignore corrupt storage
     }
-  : {
-      ...avalancheFuji,
-      rpcUrls: {default: {http: [RPC_URL]}},
-    };
+  }
+  activeConfig = base;
+  return activeConfig;
+}
 
-export const NETWORK_LABEL = IS_LOCAL_CHAIN ? 'Local Hardhat' : 'Avalanche Fuji';
-export const EXPLORER_BASE = IS_LOCAL_CHAIN ? '' : 'https://testnet.snowtrace.io';
+export function setRuntimeConfig(next: Partial<RuntimeContractConfig>): RuntimeContractConfig {
+  const current = getRuntimeConfig();
+  const updated: RuntimeContractConfig = {
+    chainId: Number(next.chainId) || current.chainId,
+    network: next.network || current.network,
+    token: next.token !== undefined ? toValidAddress(next.token) : current.token,
+    registry: next.registry !== undefined ? toValidAddress(next.registry) : current.registry,
+    oracleSigner: next.oracleSigner !== undefined ? toValidAddress(next.oracleSigner) : current.oracleSigner,
+    deployBlock: next.deployBlock !== undefined ? Math.max(0, Number(next.deployBlock || 0)) : current.deployBlock,
+  };
+  activeConfig = updated;
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } catch {
+      // Ignore quota errors
+    }
+  }
+  return updated;
+}
+
+export function getChainId(): number {
+  return getRuntimeConfig().chainId;
+}
+
+export function isLocalChain(chainId = getChainId()): boolean {
+  return chainId === 31337;
+}
+
+export function getRpcUrl(chainId = getChainId()): string {
+  if (process.env.NEXT_PUBLIC_RPC_URL?.trim() && chainId === 43113) {
+    return process.env.NEXT_PUBLIC_RPC_URL.trim();
+  }
+  return chainId === 31337 ? 'http://127.0.0.1:8545' : 'https://api.avax-test.network/ext/bc/C/rpc';
+}
+
+export function getActiveChain(chainId = getChainId()): Chain {
+  const rpc = getRpcUrl(chainId);
+  return chainId === 31337
+    ? {
+        ...hardhat,
+        rpcUrls: {default: {http: [rpc]}},
+      }
+    : {
+        ...avalancheFuji,
+        rpcUrls: {default: {http: [rpc]}},
+      };
+}
+
+export function getNetworkLabel(chainId = getChainId()): string {
+  return chainId === 31337 ? 'Local Hardhat' : 'Avalanche Fuji';
+}
+
+export function getExplorerBase(chainId = getChainId()): string {
+  return chainId === 31337 ? '' : 'https://testnet.snowtrace.io';
+}
+
+export function getTokenAddress(): Address | null {
+  return getRuntimeConfig().token;
+}
+
+export function getRegistryAddress(): Address | null {
+  return getRuntimeConfig().registry;
+}
+
+export function getOracleSignerAddress(): Address | null {
+  return getRuntimeConfig().oracleSigner;
+}
+
+export function getDeployBlock(): bigint {
+  return BigInt(Math.max(0, getRuntimeConfig().deployBlock));
+}
+
+export function isContractDeployed(): boolean {
+  const cfg = getRuntimeConfig();
+  return Boolean(cfg.token && cfg.registry);
+}
+
+export function getPublicClient(chainId = getChainId()) {
+  return createPublicClient({
+    chain: getActiveChain(chainId),
+    transport: http(getRpcUrl(chainId)),
+  });
+}
 
 export const TOKEN_ABI = tokenAbiJson as Abi;
 export const REGISTRY_ABI = registryAbiJson as Abi;
+export const CONTRACT_BYTECODES = bytecodesJson as {
+  GreenCarbonToken: {abi: Abi; bytecode: Hex};
+  CarbonRegistry: {abi: Abi; bytecode: Hex};
+};
 
-const rawToken = (rawAddresses.token || '').trim();
-const rawRegistry = (rawAddresses.registry || '').trim();
-const rawOracle = (rawAddresses.oracleSigner || '').trim();
+// Backward-compatible snapshots for static helpers
+export const CHAIN_ID = defaultConfig().chainId;
+export const EXPLORER_BASE = getExplorerBase(CHAIN_ID);
 
-export const TOKEN_ADDRESS: Address | null =
-  isAddress(rawToken) && rawToken !== zeroAddress ? (rawToken as Address) : null;
-export const REGISTRY_ADDRESS: Address | null =
-  isAddress(rawRegistry) && rawRegistry !== zeroAddress ? (rawRegistry as Address) : null;
-export const ORACLE_SIGNER_ADDRESS: Address | null =
-  isAddress(rawOracle) && rawOracle !== zeroAddress ? (rawOracle as Address) : null;
-export const DEPLOY_BLOCK = BigInt(Math.max(0, Number(rawAddresses.deployBlock || 0)));
-export const IS_DEPLOYED = Boolean(TOKEN_ADDRESS && REGISTRY_ADDRESS);
-
-export const publicClient = createPublicClient({
-  chain: ACTIVE_CHAIN,
-  transport: http(RPC_URL),
-});
-
-export function getWalletClient(ethereum: Eip1193Provider, account?: Address) {
+export function getWalletClient(ethereum: Eip1193Provider, account?: Address, chainId = getChainId()) {
   return createWalletClient({
     account,
-    chain: ACTIVE_CHAIN,
+    chain: getActiveChain(chainId),
     transport: custom(ethereum),
   });
 }
 
-export async function ensureFujiNetwork(ethereum: Eip1193Provider): Promise<number> {
-  const targetHex = `0x${CHAIN_ID.toString(16)}` as Hex;
+export async function ensureFujiNetwork(ethereum: Eip1193Provider, targetChainId = getChainId()): Promise<number> {
+  const targetHex = `0x${targetChainId.toString(16)}` as Hex;
   const currentHex = (await ethereum.request({method: 'eth_chainId'})) as string;
-  if (parseInt(currentHex, 16) === CHAIN_ID) {
-    return CHAIN_ID;
+  if (parseInt(currentHex, 16) === targetChainId) {
+    return targetChainId;
   }
 
+  const rpc = getRpcUrl(targetChainId);
   try {
     await ethereum.request({
       method: 'wallet_switchEthereumChain',
       params: [{chainId: targetHex}],
     });
-    return CHAIN_ID;
+    return targetChainId;
   } catch (err: unknown) {
     const errObj = err as {code?: number; data?: {originalError?: {code?: number}}};
     const code = errObj?.code ?? errObj?.data?.originalError?.code;
@@ -100,12 +217,12 @@ export async function ensureFujiNetwork(ethereum: Eip1193Provider): Promise<numb
       await ethereum.request({
         method: 'wallet_addEthereumChain',
         params: [
-          IS_LOCAL_CHAIN
+          targetChainId === 31337
             ? {
                 chainId: targetHex,
                 chainName: 'Hardhat Localhost 8545',
                 nativeCurrency: {name: 'Ether', symbol: 'ETH', decimals: 18},
-                rpcUrls: [RPC_URL],
+                rpcUrls: [rpc],
               }
             : {
                 chainId: targetHex,
@@ -116,23 +233,27 @@ export async function ensureFujiNetwork(ethereum: Eip1193Provider): Promise<numb
               },
         ],
       });
-      return CHAIN_ID;
+      return targetChainId;
     }
     throw err;
   }
 }
 
 export function txUrl(hash?: string | null): string | null {
-  if (!hash || !EXPLORER_BASE) return null;
-  return `${EXPLORER_BASE}/tx/${hash}`;
+  const base = getExplorerBase();
+  if (!hash || !base) return null;
+  return `${base}/tx/${hash}`;
 }
 
 export function addressUrl(addr?: string | null): string | null {
-  if (!addr || !EXPLORER_BASE) return null;
-  return `${EXPLORER_BASE}/address/${addr}`;
+  const base = getExplorerBase();
+  if (!addr || !base) return null;
+  return `${base}/address/${addr}`;
 }
 
 export function nftUrl(tokenId: number | string): string | null {
-  if (!REGISTRY_ADDRESS || !EXPLORER_BASE) return null;
-  return `${EXPLORER_BASE}/nft/${REGISTRY_ADDRESS}/${tokenId}`;
+  const base = getExplorerBase();
+  const registry = getRegistryAddress();
+  if (!registry || !base) return null;
+  return `${base}/nft/${registry}/${tokenId}`;
 }

@@ -11,3 +11,4 @@ typechain-types
 
 .export-api
 *.tsbuildinfo
+frontend/.data
